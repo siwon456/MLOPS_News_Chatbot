@@ -55,7 +55,7 @@ jobs:
         # 이 경우, requirements.txt에 torch 관련 라인도 포함되어야 합니다.
 
     - name: Run data pipeline # data_pipeline.py 스크립트 실행
-      run: python data_pipeline.py
+      run: python pipeline.py
       # data_pipeline.py 내에서 os.getenv로 읽도록 API 키와 키워드 환경 변수 전달
       env:
         NAVER_CLIENT_ID: ${{ env.NAVER_CLIENT_ID }}

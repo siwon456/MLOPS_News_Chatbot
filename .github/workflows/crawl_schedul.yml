@@ -15,7 +15,9 @@ on:
 jobs:
   crawl_and_update_db:
     runs-on: ubuntu-latest # 워크플로우를 실행할 운영체제 (가상 환경)
-    
+
+    permissions: # <--- 이 부분을 추가합니다
+      contents: write # 리포지토리 콘텐츠에 대한 쓰기 권한 부여
     # 환경 변수 설정
     env:
       NAVER_CLIENT_ID: ${{ secrets.NAVER_CLIENT_ID }} # GitHub Secrets에서 네이버 Client ID 가져옴

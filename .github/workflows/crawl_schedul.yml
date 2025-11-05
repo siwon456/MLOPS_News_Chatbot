@@ -36,23 +36,22 @@ jobs:
       with:
         python-version: '3.10' # 현재 프로젝트에 맞는 Python 버전 (로컬 data-env와 동일하게)
 
-    - name: Install dependencies # 필요한 Python 라이브러리 설치
+   - name: Install dependencies # 필요한 Python 라이브러리 설치
       run: |
         pip install --upgrade pip
         
-        # **핵심 수정**: PyTorch (torch) 설치
-        # jhgan/ko-sroberta-multitask 모델은 PyTorch 기반이므로 필수
-        # CPU 버전으로 설치 (GitHub Actions 러너는 기본적으로 CPU 환경)
-        pip install torch==2.1.2 torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+        # 1. NumPy 버전을 1.x대로 고정 (이것이 핵심)
+        pip install "numpy<2" # 또는 numpy==1.26.6 (최신 1.x 안정 버전)
+
+        # 2. PyTorch 최신 안정 버전 설치 (CPU)
+        pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
         
-        # 제공된 라이브러리 목록에 맞춰 설치
-        # tensorflow는 현재 data_pipeline.py에서 직접 사용되지 않으므로 제거 (선택 사항)
-        # 만약 정말 필요하다면 pip install tensorflow==2.10.0 numpy==1.23.0 protobuf==3.19.6 scipy==1.9.1 추가
+        # 3. transformers 라이브러리 설치 (sentence-transformers와 langchain의 의존성)
+        #    transformers를 명시적으로 최신 버전으로 설치하여 PyTorch API 변경에 대응
+        pip install transformers
+        
+        # 4. 나머지 라이브러리 설치 (여기서는 tensorflow는 제거하는 것이 좋습니다)
         pip install pandas sentence-transformers chromadb requests beautifulsoup4 urllib3 langchain langchain-community langchain-ollama
-        
-        # (선택 사항) 로컬에서 pip freeze > requirements.txt를 생성했다면,
-        # pip install -r requirements.txt 로 설치하는 것이 더 안정적입니다.
-        # 이 경우, requirements.txt에 torch 관련 라인도 포함되어야 합니다.
 
     - name: Run data pipeline # data_pipeline.py 스크립트 실행
       run: python pipeline.py

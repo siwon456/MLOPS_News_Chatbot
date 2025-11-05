@@ -98,8 +98,7 @@ if __name__ == "__main__":
     print("이 프로그램은 크롤링과 임베딩, DB 저장만 수행합니다.")
     print("-" * 50)
     
-    # 환경 변수에서 키워드를 읽어오도록 변경 (자동화 시 활용)
-    keywords_str = os.getenv("GITHUB_KEYWORDS", "반도체, 인공지능, LLM") # 기본값 설정
+    keywords_str = os.getenv("GITHUB_KEYWORDS", "반도체, AI, LLM")
     keywords = [kw.strip() for kw in keywords_str.split(',') if kw.strip()]
     
     if not keywords:
@@ -109,12 +108,34 @@ if __name__ == "__main__":
     print(f"Keywords to process: {keywords}")
 
     for i, keyword in enumerate(keywords):
-        db_name = f"DB{i+1}"
-        db_path = f"./chroma_db_{db_name}"
+        try: # <--- try 블록 시작
+            db_name = f"DB{i+1}"
+            db_path = f"./chroma_db_{db_name}"
+            
+            print(f"\n--- 키워드: '{keyword}' 크롤링 및 DB 업데이트 시작 ---")
+            
+            if os.path.exists(db_path):
+                print(f"Database for '{db_name}' found. Starting update process...")
+            else:
+                print(f"Database for '{db_name}' not found. Creating new database...")
+            
+            news_df = get_all_news(keyword)
+            
+            if not news_df.empty:
+                # data 폴더가 없을 경우 생성 (이전에 누락되었을 수 있음)
+                if not os.path.exists("./data"):
+                    os.makedirs("./data")
+                
+                csv_file_path = f"./data/{db_name}_naver_news_with_content.csv"
+                news_df.to_csv(csv_file_path, index=False, encoding='utf-8-sig')
+                print(f"Saved crawled data to {csv_file_path}")
+                
+                if not create_and_store_embeddings(news_df, db_name):
+                    print(f"Error: Failed to create/store embeddings for '{keyword}'. Skipping to next keyword.")
+            else:
+                print(f"No news data collected for '{keyword}'. Skipping embedding and DB storage.")
         
-        print(f"\n--- 키워드: '{keyword}' 크롤링 및 DB 업데이트 시작 ---")
-        
-        if os.path.exists(db_path):
-            print(f"Database for '{db_name}' found. Starting update process...")
-        else:
-            print(f"Database for '{db_name}' not found. Creating new database...")
+        except Exception as e: # <--- except 블록 추가
+            print(f"CRITICAL ERROR: An unexpected error occurred during processing keyword '{keyword}': {e}")
+            import traceback
+            traceback.print_exc() # 상세 스택 트레이스 출력

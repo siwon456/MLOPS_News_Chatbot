@@ -11,7 +11,11 @@ on:
     - cron: '0 * * * *' # 예시: 매 시간 정각 (UTC)
 
   workflow_dispatch: # GitHub 웹 UI에서 수동으로 워크플로우를 실행할 수 있도록 하는 트리거
-
+  
+concurrency: # 이 부분을 추가
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+  
 jobs:
   crawl_and_update_db:
     runs-on: ubuntu-latest # 워크플로우를 실행할 운영체제 (가상 환경)

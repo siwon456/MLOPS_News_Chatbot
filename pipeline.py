@@ -4,255 +4,169 @@ import requests
 from bs4 import BeautifulSoup
 import re
 import time
-from sentence_transformers import SentenceTransformer
 import chromadb
-from langchain_community.embeddings import SentenceTransformerEmbeddings
 import sys
 import urllib.parse
-import logging # 로깅 모듈 추가
+import logging
+# --- 새로운 임포트 추가 ---
+from chromadb.utils import embedding_functions 
 
-# 로깅 설정 (GitHub Actions 로그에 더 자세한 정보 출력 위함)
+# 로깅 설정 (GitHub Actions 로그에서 더 잘 보이도록)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- 1. 전역 변수 설정 (API 키 등) ---
-# GitHub Secrets에서 환경 변수를 가져오거나, 로컬 실행을 위해 기본값 설정
-NAVER_CLIENT_ID = os.getenv("NAVER_CLIENT_ID")
-NAVER_CLIENT_SECRET = os.getenv("NAVER_CLIENT_SECRET")
-
-# API 키가 설정되었는지 확인
-if not NAVER_CLIENT_ID or not NAVER_CLIENT_SECRET:
-    logging.error("NAVER_CLIENT_ID or NAVER_CLIENT_SECRET is not set as environment variables.")
-    # GitHub Actions에서는 sys.exit(1)로 종료하여 실패를 알림
-    # 로컬에서는 사용자에게 메시지 표시 후 종료
-    if os.getenv("GITHUB_ACTIONS"):
-        sys.exit(1)
-    else:
-        print("Error: NAVER_CLIENT_ID or NAVER_CLIENT_SECRET environment variables are not set. "
-              "Please set them before running the script.")
-        sys.exit(1)
-
-
-# --- 2. 헬퍼 함수 정의 ---
-
-def clean_text(text):
-    """HTML 태그와 불필요한 특수문자를 제거하는 함수"""
-    cleaned_text = re.sub('<.*?>', '', text)
-    cleaned_text = cleaned_text.replace('&quot;', "'")
-    cleaned_text = cleaned_text.replace('<b>', '').replace('</b>', '')
-    cleaned_text = re.sub(r'\[.*?\]', '', cleaned_text) # [사진], [앵커] 같은 패턴 제거
-    cleaned_text = re.sub(r'\s+', ' ', cleaned_text).strip() # 여러 공백 하나로 축소 및 양쪽 공백 제거
-    return cleaned_text
-
-def get_article_content(url):
-    """주어진 URL에서 뉴스 기사 본문을 크롤링하는 함수"""
-    try:
-        response = requests.get(url, timeout=5) # 타임아웃 5초 설정
-        response.raise_for_status() # HTTP 오류 발생 시 예외 발생
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # 네이버 뉴스 본문 추출 (다양한 본문 영역 클래스 고려)
-        content_div = soup.find('div', {'id': 'dic_area'}) # 기본 네이버 뉴스 본문
-        if not content_div:
-            content_div = soup.find('div', class_=re.compile(r'article_body_content|news_content|content_area')) # 기타 본문 클래스
-        
-        if content_div:
-            # 스크립트, 광고 등 불필요한 요소 제거
-            for script_or_ad in content_div(['script', 'a', 'span', 'strong', 'em', 'img', 'figure', 'figcaption']):
-                script_or_ad.extract()
-            
-            article_text = content_div.get_text(separator=' ', strip=True)
-            return clean_text(article_text)
-        else:
-            logging.warning(f"Could not find article content for URL: {url}")
-            return ""
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Request failed for {url}: {e}")
-        return ""
-    except Exception as e:
-        logging.error(f"Error parsing content from {url}: {e}")
-        return ""
-
-def search_naver_news(keyword, start, display):
-    """네이버 뉴스 API를 호출하여 데이터를 가져오는 함수"""
-    encText = urllib.parse.quote(keyword)
-    url = f"https://openapi.naver.com/v1/search/news?query={encText}&start={start}&display={display}&sort=date" # 최신순 정렬
-    
-    headers = {
-        "X-Naver-Client-Id": NAVER_CLIENT_ID,
-        "X-Naver-Client-Secret": NAVER_CLIENT_SECRET
-    }
-    
-    try:
-        response = requests.get(url, headers=headers, timeout=10) # 타임아웃 10초
-        logging.info(f"DEBUG: API request for '{keyword}' (start={start}) - Status Code: {response.status_code}")
-        if response.status_code == 200:
-            response_json = response.json()
-            # 첫 1개 아이템만 로그에 출력하여 너무 길어지는 것을 방지
-            logging.info(f"DEBUG: API response for '{keyword}': {response_json.get('items', [])[:1]}")
-            return response_json
-        else:
-            logging.error(f"Error: HTTP Error Code {response.status_code} for '{keyword}'. Check API usage limits or API keys.")
-            return None
-    except requests.exceptions.Timeout:
-        logging.error(f"Error: API Request for '{keyword}' timed out after 10 seconds.")
-        return None
-    except requests.exceptions.ConnectionError as e:
-        logging.error(f"Error: API Connection Failed for '{keyword}': {e}.")
-        return None
-    except Exception as e:
-        logging.error(f"Error: API Request Failed for '{keyword}': {e}.")
-        return None
-
-def get_all_news(keyword):
-    """네이버 API와 웹 크롤링을 결합하여 뉴스 본문을 포함한 데이터를 가져오는 함수"""
+def get_all_news(keyword, max_crawl_items=300):
     logging.info(f"Starting detailed news collection for keyword: '{keyword}'")
-    result_all = []
-    start = 1
-    display = 100 # 한 페이지당 최대 100개
-    max_crawl_items = 300 # 각 키워드당 최대 300개 기사 목표 (테스트를 위해 300으로 상향)
-
+    base_url = "https://search.naver.com/search.naver?where=news&sm=tab_pge&query="
+    encoded_keyword = urllib.parse.quote(keyword)
+    news_list = []
+    page = 1
     crawled_count = 0
-    while start <= 1000 and crawled_count < max_crawl_items: # API는 최대 1000개까지 검색 가능
-        logging.info(f"Crawling news for '{keyword}' from page {start} (currently crawled: {crawled_count}/{max_crawl_items})...")
-        result_json = search_naver_news(keyword, start, display)
+
+    while crawled_count < max_crawl_items:
+        url = f"{base_url}{encoded_keyword}&sort=1&ds=&de=&docid=&nso=so:r,p:all,a:all&start={((page-1)*10) + 1}"
+        logging.info(f"Crawling news for '{keyword}' from page {page} (URL: {url})...")
         
-        if result_json and 'items' in result_json and result_json['items']:
-            for item in result_json['items']:
-                if crawled_count >= max_crawl_items:
-                    break # 목표 개수 도달 시 루프 종료
+        try:
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status() # HTTP 오류 발생 시 예외 발생
+            soup = BeautifulSoup(response.text, 'html.parser')
 
-                # link 또는 originallink가 없으면 스킵
-                article_url = item.get('originallink') or item.get('link')
-                if not article_url:
-                    logging.warning(f"Skipping article due to missing link: {item.get('title', 'No Title')}")
-                    continue
-
-                article_text = get_article_content(article_url)
-                
-                if article_text and len(article_text) > 50: # 본문 내용이 최소 50자 이상인 경우만 추가
-                    result_all.append({
-                        'title': clean_text(item['title']),
-                        'description': clean_text(item['description']),
-                        'content': article_text,
-                        'link': article_url
-                    })
-                    crawled_count += 1
-                else:
-                    logging.info(f"Skipping article '{item.get('title', 'No Title')}' due to empty/short content or crawling failure.")
-                
-                time.sleep(0.05) # 서버 부하를 줄이기 위해 0.05초 지연 (너무 빠르면 차단될 수도 있음)
+            # 뉴스 기사 링크들 찾기
+            news_links = soup.select('div.news_area > div.news_info > div.info_group > a.info')
             
-            if len(result_json['items']) < display:
-                logging.info(f"DEBUG: Less than {display} items returned for '{keyword}' at start {start}, stopping pagination.")
-                break # 더 이상 결과가 없으면 종료
-            start += display
-        else:
-            logging.info(f"DEBUG: No items in API response for '{keyword}' at start {start}, or API call failed. Stopping further crawling for this keyword.")
-            break # API 응답이 없거나 item이 없으면 종료
+            if not news_links:
+                logging.info(f"No more news links found for '{keyword}' on page {page}. Stopping crawl.")
+                break
 
-    if crawled_count >= max_crawl_items:
-        logging.info(f"Note: Reached target of {max_crawl_items} items for '{keyword}'.")
-    elif not result_all:
-        logging.warning(f"Warning: No news articles were collected for '{keyword}'. API or crawling issue suspected.")
-    else:
-        logging.info(f"Finished crawling for '{keyword}'. Total articles collected: {len(result_all)}.")
-    
-    return pd.DataFrame(result_all)
+            for link_tag in news_links:
+                if 'naver.com/article/' in link_tag['href']: # 네이버 뉴스 원문 링크만
+                    article_link = link_tag['href']
+                    try:
+                        article_response = requests.get(article_link, headers=headers, timeout=10)
+                        article_response.raise_for_status()
+                        article_soup = BeautifulSoup(article_response.text, 'html.parser')
+                        
+                        title = article_soup.select_one('h2#title_area > span').text.strip() if article_soup.select_one('h2#title_area > span') else '제목 없음'
+                        description_tag = article_soup.select_one('meta[property="og:description"]')
+                        description = description_tag['content'].strip() if description_tag else '설명 없음'
+                        content_tags = article_soup.select('div#newsct_article') # 기사 본문 영역
+                        content = ''
+                        if content_tags:
+                            for tag in content_tags:
+                                # 광고, 기자 이름, 이메일, 저작권 등 불필요한 정보 제거
+                                for script_or_ad in tag(['script', 'a', 'strong', 'em', 'span']): # 필요한 태그만 남기기
+                                    script_or_ad.extract()
+                                content += tag.get_text(separator='\n', strip=True)
+                            
+                            # 불필요한 공백, 줄바꿈, 특수문자 정리
+                            content = re.sub(r'\s+', ' ', content).strip()
+                            content = re.sub(r'\[.*?\]', '', content).strip() # [사진], [영상] 등 제거
+                            content = re.sub(r'\(.*?\)', '', content).strip() # (서울=연합뉴스) 등 제거
+                            
+                            # 기사 끝부분 흔한 불필요 텍스트 제거
+                            content = re.split(r'저작권자 ⓒ 한경닷컴|▶ 네이버에서 서울경제', content)[0].strip()
+                            content = re.split(r'기자 =.+?|작가 =.+?|사진 =.+?', content)[0].strip() # 기자/작가 정보 제거
+                        else:
+                            content = '내용 없음'
 
+                        if content != '내용 없음' and len(content) > 100: # 내용이 충분히 길 때만 추가
+                            news_list.append({
+                                'title': title,
+                                'description': description,
+                                'link': article_link,
+                                'content': content
+                            })
+                            crawled_count += 1
+                            if crawled_count >= max_crawl_items:
+                                break
+                    except requests.exceptions.RequestException as e:
+                        logging.warning(f"Failed to fetch article {article_link}: {e}")
+                    except Exception as e:
+                        logging.warning(f"Error parsing article {article_link}: {e}")
+                time.sleep(0.5) # 과도한 요청 방지
+            
+            page += 1
+            time.sleep(1) # 페이지 전환 대기
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Failed to crawl news for '{keyword}' from page {page}: {e}")
+            break
+        except Exception as e:
+            logging.error(f"An unexpected error occurred during crawling for '{keyword}' on page {page}: {e}")
+            break
+
+    logging.info(f"Finished crawling for '{keyword}'. Total items collected: {len(news_list)}")
+    return pd.DataFrame(news_list)
 
 def create_and_store_embeddings(df, db_name="my_chroma_db"):
-    """DataFrame의 데이터를 ChromaDB에 임베딩하여 저장하는 함수"""
     logging.info(f"Building and embedding the database for '{db_name}'...")
     
     # ChromaDB 클라이언트 설정
     client = chromadb.PersistentClient(path=f"./chroma_db_{db_name}")
     
-    # 기존 컬렉션이 있으면 로드, 없으면 생성
+    # --- ⭐ 핵심 수정: ChromaDB 호환 임베딩 함수 초기화 및 전달 ⭐ ---
+    chroma_embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(
+        model_name="jhgan/ko-sroberta-multitask"
+    )
+    logging.info("DEBUG: Initialized ChromaDB compatible SentenceTransformer EmbeddingFunction for data_pipeline.")
+
     try:
-        collection = client.get_or_create_collection(name=db_name)
-        logging.info(f"Accessing ChromaDB collection: '{db_name}'. Current total articles: {collection.count()}")
+        # get_or_create_collection 호출 시 embedding_function을 명시적으로 전달해야 합니다.
+        collection = client.get_or_create_collection(name=db_name, embedding_function=chroma_embedding_function)
+        logging.info(f"Accessing ChromaDB collection: '{db_name}'. Current total articles: {collection.count()} before adding.")
     except Exception as e:
-        logging.error(f"Error accessing/creating ChromaDB collection '{db_name}': {e}")
+        logging.error(f"CRITICAL ERROR: Error accessing/creating ChromaDB collection '{db_name}': {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
-    # 임베딩 모델 로드 (캐시 사용)
-    try:
-        model = SentenceTransformerEmbeddings(model_name="jhgan/ko-sroberta-multitask")
-        logging.info(f"SentenceTransformer model 'jhgan/ko-sroberta-multitask' loaded successfully.")
-    except Exception as e:
-        logging.error(f"Error loading SentenceTransformer model: {e}")
-        return False
+    df_to_add = []
+    existing_links_in_db = set()
+    if collection.count() > 0:
+        try:
+            # 대규모 DB에서는 비효율적일 수 있으나, 현재는 작동 여부 확인이 우선
+            # collection.get()은 기본적으로 limit가 있으므로 모든 메타데이터를 가져오려면 반복문이 필요
+            # 여기서는 편의상 collection.count()를 limit으로 사용.
+            all_db_items = collection.get(ids=collection.get(limit=collection.count())['ids'], include=['metadatas'])
+            existing_links_in_db = set(item['link'] for item in all_db_items['metadatas'] if 'link' in item)
+            logging.info(f"DEBUG: Found {len(existing_links_in_db)} existing links in '{db_name}' collection.")
+        except Exception as e:
+            logging.warning(f"WARNING: Could not retrieve all existing links from '{db_name}' for duplicate check: {e}. "
+                            "New articles might be added even if their links already exist.")
+            # 오류 발생 시 existing_links_in_db를 비워 새로 추가하도록 유도 (중복 발생 가능성 있음)
+            existing_links_in_db = set() 
+
+
+    for index, row in df.iterrows():
+        article_id = row['link']
+        if article_id in existing_links_in_db:
+            logging.info(f"Skipping already existing article (link: {article_id}) in '{db_name}'.")
+            continue
+        
+        if not row['content'] or len(row['content']) < 50:
+             logging.info(f"Skipping article '{row.get('title', 'No Title')}' due to empty/short content.")
+             continue
+
+        df_to_add.append(row) 
+
+    logging.info(f"DEBUG: {len(df_to_add)} unique articles identified for addition to '{db_name}'.") 
+
+    if not df_to_add:
+        logging.info(f"No new unique articles to add to '{db_name}' database for this run.")
+        return True 
 
     documents = []
     metadatas = []
     ids = []
-
-    # 중복 체크를 위한 기존 ID 가져오기 (컬렉션에 이미 데이터가 있을 경우)
-    existing_ids = set()
-    if collection.count() > 0:
-        # DB에서 모든 ID를 직접 가져오기 (ChromaDB의 get()은 기본적으로 100개만 가져오므로 limit 사용)
-        try:
-            # collection.get()은 기본적으로 limit가 있어서 모든 ID를 가져오려면 반복문 필요.
-            # 하지만 여기서는 새로 추가할 문서가 기존에 있는지 여부만 판단하면 되므로,
-            # 새로 추가될 문서의 link를 기준으로 중복을 체크하는 것이 더 효율적
-            # (아래 로직에서 link를 기준으로 중복을 방지)
-            pass
-        except Exception as e:
-            logging.warning(f"Could not retrieve existing IDs from collection '{db_name}': {e}. "
-                            "Proceeding without full existing ID check, potential for duplicate links.")
-
-    df_to_add = []
-    for index, row in df.iterrows():
-        # 기사 링크를 ID로 사용 (중복 체크)
-        article_id = row['link']
-        
-        # 이미 DB에 해당 링크의 기사가 있는지 확인 (컬렉션에 'link' 필터를 사용)
-        # ChromaDB 필터링 예시: https://docs.trychroma.com/usage-guide#filtering-queries
-        # 그러나 collection.get()으로 필터링하는 것은 ID 기반이 아니면 복잡해질 수 있음.
-        # 가장 확실한 방법은 중복될 수 있는 문서들을 미리 필터링하고 임베딩하는 것.
-        # 여기서는 단순히 DF에서 unique한 link만 사용하고,
-        # ChromaDB는 동일 ID로 add 시 업데이트되므로 중복 추가는 아님.
-        # 새로운 기사만 추가하도록 로직을 변경합니다.
-
-        # 실제 DB에 존재하는 링크인지 확인하려면, DB에서 link 메타데이터를 기반으로 조회해야 함.
-        # collection.query(query_texts=["dummy"], where={"link": article_id})
-        # 위 쿼리는 embedding을 필요로 하므로, 단순 존재 여부 확인에는 비효율적.
-        # 따라서, 여기서는 'link'를 ID로 사용하고, add() 시 동일 ID면 업데이트되는 ChromaDB 특성 활용.
-        # 또는, 기존 DB의 모든 메타데이터를 가져와서 링크 비교. (대규모 DB에서는 비효율적)
-
-        # 현재는 ID가 link이므로, 동일한 링크는 자동으로 업데이트되거나, 중복으로 add 되지 않음.
-        # '새로운' 기사만 추가하려면, 기존 DB의 모든 링크를 가져와서 비교해야 함.
-        # 아래는 기존 DB에 없는 '새로운' 기사만 추가하는 로직입니다.
-        if collection.count() > 0:
-            # 컬렉션의 메타데이터를 모두 가져와 'link' 필드에서 현재 링크가 있는지 확인
-            # 대규모 DB에서는 이 방식이 느려질 수 있으므로,
-            # 실제 서비스에서는 별도의 DB에 크롤링된 링크 목록을 관리하는 것이 좋음.
-            # 여기서는 편의상 전체 링크 메타데이터를 가져와서 비교
-            all_links_in_db = set(item['link'] for item in collection.get(limit=collection.count(), include=['metadatas'])['metadatas'])
-            if article_id in all_links_in_db:
-                logging.info(f"Skipping already existing article (link: {article_id}) in '{db_name}'.")
-                continue # 이미 DB에 있는 기사는 스킵
-        
-        df_to_add.append(row) # 새로운 기사만 리스트에 추가
-
-    if not df_to_add:
-        logging.info(f"No new unique articles to add to '{db_name}' database for this run.")
-        return True # 추가할 새로운 기사가 없으므로 성공으로 간주
-
-    # 새로운 기사들만 임베딩하여 DB에 추가
-    logging.info(f"Adding {len(df_to_add)} new unique articles to '{db_name}' database.")
-
-    # langchain_community.embeddings를 사용하도록 변경
-    # document_embeddings = model.embed_documents([row['content'] for row in df_to_add])
     
-    # ChromaDB add는 documents, metadatas, ids 리스트를 받음
     for i, row in enumerate(df_to_add):
         documents.append(row['content'])
         metadatas.append({'title': row['title'], 'description': row['description'], 'link': row['link']})
-        ids.append(row['link']) # 링크를 ID로 사용
+        ids.append(row['link']) 
 
-    # 실제 임베딩 및 추가
     try:
+        logging.info(f"DEBUG: Attempting to add {len(documents)} documents to ChromaDB collection '{db_name}'.") 
+        # collection.add()는 collection 생성 시 지정된 embedding_function을 사용합니다.
         collection.add(
             documents=documents,
             metadatas=metadatas,
@@ -261,61 +175,52 @@ def create_and_store_embeddings(df, db_name="my_chroma_db"):
         logging.info(f"Successfully added {len(df_to_add)} new articles to '{db_name}' database. Total articles: {collection.count()}")
         return True
     except Exception as e:
-        logging.error(f"Error adding documents to ChromaDB for '{db_name}': {e}")
+        logging.error(f"CRITICAL ERROR: Error adding documents to ChromaDB for '{db_name}': {e}")
+        import traceback
+        traceback.print_exc() 
         return False
 
-# --- 3. 메인 실행 로직 ---
 if __name__ == "__main__":
-    logging.info("-" * 50)
-    logging.info("뉴스 데이터 파이프라인 시작")
-    logging.info("이 프로그램은 크롤링과 임베딩, DB 저장만 수행합니다.")
-    logging.info("-" * 50)
-    
-    # 환경 변수에서 키워드 가져오기
-    keywords_str = os.getenv("GITHUB_KEYWORDS", "")
-    keywords = [kw.strip() for kw in keywords_str.split(',') if kw.strip()]
-    
-    if not keywords:
-        logging.error("Error: No keywords provided via environment variable (GITHUB_KEYWORDS) or default.")
-        sys.exit(1) # 키워드가 없으면 종료
-            
-    logging.info(f"Keywords to process: {keywords}")
+    # --- ⭐ 키워드 리스트를 실제 사용하시는 키워드로 변경 ⭐ ---
+    # app.py의 db_names_to_load와 일치하는 개수 및 순서가 중요합니다.
+    keywords = ["경제", "IT", "정치", "사회", "세계", "스포츠"] # 예시 (6개 키워드)
+    # keywords = ["DB1", "DB2", "DB3", "DB4", "DB5", "DB6", "DB7", "DB8"] # 이전에 사용했던 DB 이름과 동일한 키워드라면 그대로 사용
 
-    # 'data' 폴더가 없으면 생성 (CSV 저장용)
-    if not os.path.exists("./data"):
-        os.makedirs("./data")
-        logging.info("Created './data' directory for CSV storage.")
+    # data 폴더 생성 확인
+    if not os.path.exists('./data'):
+        os.makedirs('./data')
 
     for i, keyword in enumerate(keywords):
-        try:
-            db_name = f"DB{i+1}"
-            db_path = f"./chroma_db_{db_name}"
-            
-            logging.info(f"\n--- 키워드: '{keyword}' 크롤링 및 DB 업데이트 시작 ---")
-            
-            if os.path.exists(db_path):
-                logging.info(f"Database for '{db_name}' found. Starting update process...")
-            else:
-                logging.info(f"Database for '{db_name}' not found. Creating new database...")
-            
-            news_df = get_all_news(keyword) # get_all_news 함수 호출
-            
-            if not news_df.empty:
-                csv_file_path = f"./data/{db_name}_naver_news_with_content.csv"
-                news_df.to_csv(csv_file_path, index=False, encoding='utf-8-sig')
-                logging.info(f"Saved crawled data to {csv_file_path}")
-                
-                # DB 저장 시도
-                if not create_and_store_embeddings(news_df, db_name):
-                    logging.error(f"Error: Failed to create/store embeddings for '{keyword}'. Skipping to next keyword.")
-            else:
-                logging.info(f"No news data collected for '{keyword}'. Skipping embedding and DB storage.")
+        db_name = f"DB{i+1}" # DB1, DB2, ...
+        logging.info(f"\n--- Processing keyword: {keyword} (DB: {db_name}) ---")
         
-        except Exception as e:
-            logging.critical(f"CRITICAL ERROR: An unexpected error occurred during processing keyword '{keyword}': {e}")
-            import traceback
-            traceback.print_exc() # 상세 스택 트레이스 출력
-            # 특정 키워드 처리 중 오류 발생해도 다른 키워드 계속 진행
-            # sys.exit(1) # 모든 작업 중단하고 GitHub Actions 실패 처리하려면 이 줄 주석 해제
+        # --- ⭐ CSV 파일에서 데이터 로드하는 임시 디버깅 모드 (선택 사항) ⭐ ---
+        # 기존 CSV 파일이 있다면 크롤링 대신 해당 파일을 로드하여 임베딩만 시도
+        # 이전에 크롤링이 성공적으로 되었다면 시간을 절약할 수 있습니다.
+        csv_file_path = f'./data/{db_name}_naver_news_with_content.csv'
+        if os.path.exists(csv_file_path):
+            logging.info(f"Loading data from existing CSV: {csv_file_path}")
+            try:
+                news_df = pd.read_csv(csv_file_path)
+            except Exception as e:
+                logging.error(f"Error loading CSV {csv_file_path}: {e}. Attempting full crawl instead.")
+                news_df = get_all_news(keyword, max_crawl_items=100) # 디버깅용으로 item 수 줄임
+        else:
+            logging.info(f"CSV file not found. Starting full crawl for {keyword}...")
+            news_df = get_all_news(keyword, max_crawl_items=100) # 디버깅용으로 item 수 줄임
 
-    logging.info("\n--- 모든 키워드 처리 완료 ---")
+        if news_df.empty:
+            logging.warning(f"No news data collected or loaded for {keyword}. Skipping embedding.")
+            continue
+        
+        # 크롤링 또는 로드된 데이터를 CSV로 저장 (항상 최신 상태 유지)
+        news_df.to_csv(csv_file_path, index=False, encoding='utf-8-sig')
+        logging.info(f"Saved crawled/loaded data to {csv_file_path}")
+
+        success = create_and_store_embeddings(news_df, db_name=db_name)
+        if not success:
+            logging.error(f"Failed to create embeddings for keyword: {keyword}")
+            # 이 경우 전체 워크플로우를 실패로 표시
+            sys.exit(1) 
+
+    logging.info("\n--- All data pipelines finished successfully ---")

@@ -1,89 +1,64 @@
-name: Scheduled News Crawler # 워크플로우 이름
+name: Scheduled News Crawler
 
 on:
   schedule:
-    # 매 시간마다 실행 (UTC 기준)
-    # 0 * * * *: 매 시간 0분(정각)마다 실행
-    # UTC와 한국 시간(KST)은 9시간 차이 (KST = UTC + 9시간)
-    # 따라서 한국 시간 오전 9시에 실행되려면, UTC 0시에 설정해야 합니다.
-    # 한국 시간 X시에 실행되려면, cron 표현식에는 (X-9+24)%24 를 적용합니다.
-    # 예: 한국 시간 오전 10시 (KST 10시) -> UTC 1시이므로 '0 1 * * *'
-    - cron: '0 * * * *' # 예시: 매 시간 정각 (UTC)
+    - cron: '0 0 * * *' # 매일 자정 실행
+  workflow_dispatch: # 수동 실행 허용
 
-  workflow_dispatch: # GitHub 웹 UI에서 수동으로 워크플로우를 실행할 수 있도록 하는 트리거
-  
-concurrency: # 이 부분을 추가
+concurrency: # 동시에 하나의 워크플로우만 실행되도록 설정
   group: ${{ github.workflow }}
   cancel-in-progress: true
-  
+
 jobs:
-  crawl_and_update_db:
-    runs-on: ubuntu-latest # 워크플로우를 실행할 운영체제 (가상 환경)
-
-    permissions: # <--- 이 부분을 추가합니다
-      contents: write # 리포지토리 콘텐츠에 대한 쓰기 권한 부여
-    # 환경 변수 설정
-    env:
-      NAVER_CLIENT_ID: ${{ secrets.NAVER_CLIENT_ID }} # GitHub Secrets에서 네이버 Client ID 가져옴
-      NAVER_CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }} # GitHub Secrets에서 네이버 Client Secret 가져옴
-      # 크롤링할 키워드를 쉼표로 구분하여 설정. data_pipeline.py에서 이 환경 변수를 읽음.
-      GITHUB_KEYWORDS: "반도체, AI, LLM, 경제, 주식, 국내뉴스" 
-
+  build-and-deploy:
+    runs-on: ubuntu-latest
     steps:
-    - name: Checkout repository # GitHub 저장소 코드 가져오기
-      uses: actions/checkout@v4
-      # DB 파일을 포함한 변경사항을 푸시하기 위해 토큰 권한 설정
-      # secrets.GITHUB_TOKEN은 GitHub Actions에서 자동으로 제공되는 토큰
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-        
-    - name: Set up Python # Python 환경 설정
+    - name: Checkout code
+      uses: actions/checkout@v4 # 최신 checkout 액션 사용
+
+    - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.10' # 현재 프로젝트에 맞는 Python 버전 (로컬 data-env와 동일하게)
+        python-version: '3.9' # 또는 사용하는 파이썬 버전 (3.8 이상 권장)
 
-    - name: Install dependencies # 필요한 Python 라이브러리 설치
+    - name: Install dependencies
       run: |
-        pip install --upgrade pip
-        
-        # 1. NumPy 버전을 1.x대로 고정 (이것이 핵심)
-        pip install "numpy<2" # 또는 numpy==1.26.6 (최신 1.x 안정 버전)
+        python -m pip install --upgrade pip
+        pip install pandas beautifulsoup4 requests chromadb sentence-transformers langchain-community cohere ollama numpy
 
-        # 2. PyTorch 최신 안정 버전 설치 (CPU)
-        pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
-        
-        # 3. transformers 라이브러리 설치 (sentence-transformers와 langchain의 의존성)
-        #    transformers를 명시적으로 최신 버전으로 설치하여 PyTorch API 변경에 대응
-        pip install transformers
-        
-        # 4. 나머지 라이브러리 설치 (여기서는 tensorflow는 제거하는 것이 좋습니다)
-        pip install pandas sentence-transformers chromadb requests beautifulsoup4 urllib3 langchain langchain-community langchain-ollama
+    - name: Run data pipeline
+      run: python data_pipeline.py
 
-    - name: Run data pipeline # data_pipeline.py 스크립트 실행
-      run: python pipeline.py
-      # data_pipeline.py 내에서 os.getenv로 읽도록 API 키와 키워드 환경 변수 전달
+    - name: Commit and Push new data
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        
+        echo "--- DEBUG: Commit and Push Start ---"
+        echo "Current directory: $(pwd)"
+        echo "Listing all files in current directory:"
+        ls -la
+        echo "Listing contents of 'data/' directory:"
+        ls -la data/ || true # data 폴더가 없어도 에러내지 않음
+        echo "Listing 'chroma_db_DB*' folders (if exist):"
+        ls -la chroma_db_DB* || true
+        
+        # ChromaDB 폴더를 강제로 추가 ('.gitignore'에 있어도 추가 시도)
+        git add -f chroma_db_DB* || true 
+        # CSV 파일도 추가
+        git add data/*.csv || true
+        git add .
+        
+        # 변경 사항이 있는지 확인 (없으면 커밋 스킵)
+        if git diff-index --quiet HEAD; then
+          echo "No changes detected. Skipping commit and push."
+        else
+          echo "Changes detected. Proceeding with commit and push."
+          git commit -m "Automated data update: $(date +'%Y-%m-%d %H:%M:%S')"
+          echo "Attempting to push changes to remote repository."
+          git pull # 충돌 방지를 위해 먼저 pull 시도 (간단한 pull)
+          git push
+          echo "--- DEBUG: Commit and Push End ---"
+        fi
       env:
-        NAVER_CLIENT_ID: ${{ env.NAVER_CLIENT_ID }}
-        NAVER_CLIENT_SECRET: ${{ env.NAVER_CLIENT_SECRET }}
-        GITHUB_KEYWORDS: ${{ env.GITHUB_KEYWORDS }} # .yml env 섹션의 GITHUB_KEYWORDS 값을 전달
-
-    - name: Commit and Push new data # 변경된 DB 파일 및 CSV 파일 커밋 및 푸시
-      # 이전 단계(data pipeline 실행)가 성공했을 때만 실행
-      if: success() 
-      run: |
-        # Git 사용자 정보 설정 (GitHub Actions 봇으로 커밋)
-        git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action"
-        
-        # 생성/업데이트된 ChromaDB 폴더 및 CSV 파일 추가 (확인 필요)
-        # ChromaDB 폴더명 패턴 (예: chroma_db_DB1, chroma_db_DB2 등)
-        # CSV 파일 경로 (예: data/DB1_naver_news_with_content.csv)
-        # 여러분의 실제 폴더 및 파일명 패턴에 맞게 조정해야 합니다.
-        git add chroma_db_* data/*.csv 
-        
-        # 변경사항이 있을 경우에만 커밋
-        git commit -m "Automated news crawl and DB update by GitHub Action" || echo "No changes to commit"
-        
-        # 원격 저장소로 푸시
-        # actions/checkout@v4 스텝에서 토큰 권한을 설정했으므로 푸시 가능
-        git push
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 기본 GITHUB_TOKEN 사용

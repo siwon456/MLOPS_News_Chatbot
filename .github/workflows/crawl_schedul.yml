@@ -21,15 +21,17 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.10' # Python 3.10 버전
+        python-version: '3.10'
 
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         # 기존 라이브러리들
         pip install pandas beautifulsoup4 requests chromadb sentence-transformers langchain-community langchain tqdm
-        # 추가: langchain.text_splitter를 포함하는 패키지 설치
+        # 추가: langchain.text_splitter 모듈을 위한 패키지 설치
         pip install langchain-text-splitters
+        # ChromaDB telemetry 오류를 방지하기 위해 cohere 제거 (만약 cohere가 설치되어 있다면)
+        pip uninstall -y cohere || true
 
     - name: Ensure data directory exists
       run: mkdir -p data
@@ -47,16 +49,15 @@ jobs:
         
         echo "--- DEBUG: Commit and Push Start ---"
         
-        # 3. 수정: 이제는 'chroma_db_merged_all' 폴더만 추가
-        git add -f chroma_db_merged_all || true 
-        # 'merged_all_news.csv' 파일도 추가
-        git add data/merged_all_news.csv || true
+        # 모든 DB 폴더와 CSV 파일 추가
+        git add -f chroma_db_DB* || true 
+        git add data/*.csv || true # data/*.csv 추가 (pipeline.py가 생성할 수 있음)
         
         if git diff-index --quiet HEAD; then
           echo "No changes detected. Skipping commit and push."
         else
           echo "Changes detected. Proceeding with commit and push."
-          git commit -m "Automated data update (Every 2 Hours, Merged DB): $(date +'%Y-%m-%d %H:%M:%S')"
+          git commit -m "Automated data update (Every 2 Hours, Individual DBs): $(date +'%Y-%m-%d %H:%M:%S')"
           git pull --rebase
           git push
           echo "--- DEBUG: Commit and Push End ---"

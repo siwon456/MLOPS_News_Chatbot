@@ -2,12 +2,10 @@ name: Scheduled News Crawler
 
 on:
   schedule:
-    # 1. 수정: 2시간마다 실행 (00시, 02시, 04시...)
-    # UTC 기준이므로, 한국 시간(KST)과는 9시간 차이가 날 수 있습니다.
-    - cron: '0 */2 * * *' 
+    - cron: '0 */2 * * *' # 2시간마다 실행
   workflow_dispatch: # 수동 실행 허용
 
-concurrency: # 동시에 하나의 워크플로우만 실행되도록 설정
+concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: true
 
@@ -18,28 +16,24 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
       with:
-        fetch-depth: 0 # git pull/push를 위해 전체 히스토리 가져오기
+        fetch-depth: 0
 
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        # 2. 수정: 요청하신 Python 3.10 버전으로 변경
-        python-version: '3.10' 
+        python-version: '3.10' # Python 3.10 버전
 
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        # 3. pipeline.py에 필요한 모든 라이브러리 설치
         pip install pandas beautifulsoup4 requests chromadb sentence-transformers langchain-community langchain tqdm
-        # (pipeline.py 내용에 따라 추가 라이브러리가 필요할 수 있습니다)
 
     - name: Ensure data directory exists
-      run: mkdir -p data # data 폴더 생성
+      run: mkdir -p data
 
     - name: Run data pipeline
       run: python pipeline.py
       env:
-        # Naver API 키를 GitHub Secrets에서 환경 변수로 전달
         NAVER_CLIENT_ID: ${{ secrets.NAVER_CLIENT_ID }}
         NAVER_CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }}
 
@@ -50,18 +44,17 @@ jobs:
         
         echo "--- DEBUG: Commit and Push Start ---"
         
-        # 4. pipeline.py가 생성한 DB 폴더와 CSV 파일 추가
-        git add -f chroma_db_DB* || true 
-        git add data/*.csv || true
+        # 3. 수정: 이제는 'chroma_db_merged_all' 폴더만 추가
+        git add -f chroma_db_merged_all || true 
+        # 'merged_all_news.csv' 파일도 추가
+        git add data/merged_all_news.csv || true
         
-        # 변경 사항이 있는지 확인
         if git diff-index --quiet HEAD; then
           echo "No changes detected. Skipping commit and push."
         else
           echo "Changes detected. Proceeding with commit and push."
-          git commit -m "Automated data update (Every 2 Hours): $(date +'%Y-%m-%d %H:%M:%S')"
-          echo "Attempting to push changes to remote repository."
-          git pull --rebase # Push 전 Pull (충돌 방지)
+          git commit -m "Automated data update (Every 2 Hours, Merged DB): $(date +'%Y-%m-%d %H:%M:%S')"
+          git pull --rebase
           git push
           echo "--- DEBUG: Commit and Push End ---"
         fi

@@ -4,37 +4,27 @@ import json
 import os
 import re
 import time
-import shutil # shutil 모듈 임포트 추가
+# import shutil # 더 이상 ChromaDB 폴더를 다루지 않으므로 제거
 from typing import List, Dict, Any
-import chromadb
-from sentence_transformers import SentenceTransformer
-from langchain.text_splitter import RecursiveCharacterTextSplitter # 이 모듈은 워크플로우에서 설치됩니다.
-from langchain.docstore.document import Document
+# import chromadb # 더 이상 ChromaDB를 다루지 않으므로 제거
+# from sentence_transformers import SentenceTransformer # 더 이상 임베딩하지 않으므로 제거
+# from langchain.text_splitter import RecursiveCharacterTextSplitter # 더 이상 텍스트 분할을 하지 않으므로 제거
+# from langchain.docstore.document import Document # 더 이상 Document 객체를 만들지 않으므로 제거
 from tqdm import tqdm
 import requests
 from bs4 import BeautifulSoup
-import sys # sys 모듈 임포트 추가
+import sys
 
 # --- 1. 설정 (환경 변수 사용) ---
 NAVER_CLIENT_ID = os.environ.get("NAVER_CLIENT_ID")
 NAVER_CLIENT_SECRET = os.environ.get("NAVER_CLIENT_SECRET")
 
-# 크롤링할 키워드 및 각 키워드에 할당할 DB 이름
-KEYWORDS_TO_PROCESS = {
-    "AI": "DB1",
-    "반도체": "DB2",
-    "경제": "DB3",
-    "기술": "DB4",
-    "환경": "DB5",
-    "사회": "DB6",
-    "정책": "DB7",
-    "문화": "DB8",
-}
+# 크롤링할 키워드 리스트
+KEYWORDS_TO_CRAWL = [
+    "AI", "반도체", "경제", "기술", "환경", "사회", "정책", "문화",
+]
 
 MAX_ARTICLES_PER_KEYWORD = 1000 # 각 키워드당 최대 크롤링할 기사 수 (Naver API 한도 내)
-CHUNK_SIZE = 1000 # 텍스트 청크 크기
-CHUNK_OVERLAP = 200 # 텍스트 청크 오버랩
-EMBEDDING_MODEL_NAME = "jhgan/ko-sroberta-multitask" # 한국어 임베딩 모델
 
 # --- 2. 헬퍼 함수 ---
 
@@ -115,8 +105,8 @@ def get_all_news_for_keyword(keyword, max_articles):
                             'title': clean_text(item['title']),
                             'description': clean_text(item['description']),
                             'content': article_text,
-                            'link': item['link']
-                            # 'keyword_topic': keyword # 이전 요청에 따라 제거
+                            'link': item['link'],
+                            'keyword_topic': keyword # 어떤 키워드에서 크롤링된 기사인지 기록
                         })
                     time.sleep(0.1)
             
@@ -129,47 +119,11 @@ def get_all_news_for_keyword(keyword, max_articles):
     print(f"--- 키워드 '{keyword}'에 대해 총 {len(result_all)}개의 뉴스 기사 크롤링 완료 ---")
     return result_all
 
-def create_and_store_chromadb(documents: List[Document], db_name: str): # keyword 인자 제거
-    """LangChain Document 리스트를 받아 ChromaDB를 생성하고 저장"""
-    
-    db_path = f"./chroma_db_{db_name}"
-    
-    # 기존 DB가 있다면 삭제 (새로운 데이터를 위해)
-    if os.path.exists(db_path):
-        print(f"기존 '{db_path}' 폴더를 삭제하고 다시 생성합니다.")
-        shutil.rmtree(db_path)
-
-    print(f"--- ChromaDB '{db_name}' 생성 및 임베딩 시작 ---")
-    print(f"임베딩 모델: '{EMBEDDING_MODEL_NAME}'")
-
-    try:
-        embeddings = SentenceTransformerEmbeddings(model_name=EMBEDDING_MODEL_NAME)
-    except Exception as e:
-        print(f"오류: 임베딩 모델 '{EMBEDDING_MODEL_NAME}' 로드 실패: {e}")
-        return False
-        
-    start_time = time.time()
-    try:
-        vectorstore = Chroma.from_documents(
-            documents=documents,
-            embedding=embeddings,
-            persist_directory=db_path,
-            collection_name=db_name
-        )
-        vectorstore.persist()
-        print(f"ChromaDB '{db_name}'에 {vectorstore._collection.count()}개 문서 청크 저장 완료.")
-    except Exception as e:
-        print(f"오류: ChromaDB 생성 및 저장 실패: {e}")
-        return False
-        
-    end_time = time.time()
-    print(f"ChromaDB '{db_name}' 생성 총 소요 시간: {end_time - start_time:.2f}초")
-    return True
 
 # --- 메인 파이프라인 실행 로직 ---
 if __name__ == "__main__":
     print("\n" + "="*50)
-    print("      뉴스 데이터 파이프라인 시작")
+    print("      통합 뉴스 데이터 파이프라인 시작 (CSV만 업데이트)")
     print("="*50)
 
     if not NAVER_CLIENT_ID or not NAVER_CLIENT_SECRET:
@@ -177,58 +131,32 @@ if __name__ == "__main__":
         print("GitHub Actions Secrets 또는 로컬 환경 변수에 추가해주세요.")
         sys.exit(1)
 
-    all_processed_dfs = []
+    all_crawled_dfs = []
     
-    for keyword, db_name in KEYWORDS_TO_PROCESS.items():
+    for keyword in KEYWORDS_TO_CRAWL:
         news_data = get_all_news_for_keyword(keyword, MAX_ARTICLES_PER_KEYWORD)
         
         if not news_data:
             print(f"경고: 키워드 '{keyword}'에 대해 크롤링된 뉴스가 없습니다. 다음 키워드로 넘어갑니다.")
             continue
             
-        df = pd.DataFrame(news_data)
-        all_processed_dfs.append(df)
-        
-        documents = []
-        for _, row in df.iterrows():
-            doc = Document(
-                page_content=row['content'],
-                metadata={
-                    "source": row['link'], 
-                    "title": row['title']
-                    # "topic": keyword # 이전 요청에 따라 제거
-                }
-            )
-            documents.append(doc)
-            
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=CHUNK_SIZE,
-            chunk_overlap=CHUNK_OVERLAP,
-            length_function=len,
-            add_start_index=True,
-        )
-        chunked_documents = text_splitter.split_documents(documents)
-        print(f"키워드 '{keyword}'의 원본 문서 {len(documents)}개 -> 청크 {len(chunked_documents)}개 생성")
+        df_keyword = pd.DataFrame(news_data)
+        all_crawled_dfs.append(df_keyword)
 
-        if not create_and_store_chromadb(chunked_documents, db_name): # keyword 인자 제거
-            print(f"오류: 키워드 '{keyword}'에 대한 ChromaDB 생성 실패. 파이프라인 중단.")
-            sys.exit(1)
+    if not all_crawled_dfs:
+        print("\n모든 키워드에 대해 크롤링된 뉴스가 없어 통합 CSV 파일을 생성할 수 없습니다.")
+        sys.exit(1)
 
-        output_csv_path_keyword = f"data/{db_name}_naver_news_with_content.csv"
-        os.makedirs(os.path.dirname(output_csv_path_keyword), exist_ok=True)
-        df.to_csv(output_csv_path_keyword, index=False, encoding='utf-8-sig')
-        print(f"키워드 '{keyword}'의 크롤링 데이터가 '{output_csv_path_keyword}'로 저장되었습니다.")
+    # 모든 키워드의 데이터를 하나의 DataFrame으로 병합
+    merged_df = pd.concat(all_crawled_dfs, ignore_index=True)
+    print(f"\n모든 키워드로부터 총 {len(merged_df)}개의 뉴스 기사 병합 완료.")
 
-    # 모든 키워드의 데이터를 하나의 CSV로 병합하여 저장 (선택 사항이지만 워크플로우에서 참조하므로 유지)
-    if all_processed_dfs:
-        merged_all_df = pd.concat(all_processed_dfs, ignore_index=True)
-        output_merged_csv_path = 'data/merged_all_news.csv'
-        os.makedirs(os.path.dirname(output_merged_csv_path), exist_ok=True)
-        merged_all_df.to_csv(output_merged_csv_path, index=False, encoding='utf-8-sig')
-        print(f"\n모든 키워드의 병합된 데이터가 '{output_merged_csv_path}'로 저장되었습니다.")
-    else:
-        print("\n모든 키워드에 대해 크롤링된 뉴스가 없어 병합된 CSV 파일이 생성되지 않았습니다.")
+    # 병합된 데이터를 하나의 CSV 파일로 저장
+    output_merged_csv_path = 'data/merged_all_news.csv'
+    os.makedirs(os.path.dirname(output_merged_csv_path), exist_ok=True)
+    merged_df.to_csv(output_merged_csv_path, index=False, encoding='utf-8-sig')
+    print(f"모든 키워드의 병합된 데이터가 '{output_merged_csv_path}'로 저장되었습니다.")
 
     print("\n" + "="*50)
-    print("      뉴스 데이터 파이프라인 완료")
+    print("      뉴스 데이터 파이프라인 완료 (CSV 업데이트만)")
     print("="*50)

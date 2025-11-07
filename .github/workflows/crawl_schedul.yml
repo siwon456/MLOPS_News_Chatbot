@@ -27,7 +27,7 @@ jobs:
         pip install pandas beautifulsoup4 requests chromadb sentence-transformers langchain-community cohere ollama numpy
 
     - name: Run data pipeline
-      run: python data_pipeline.py
+      run: python pipeline.py
 
     - name: Commit and Push new data
       run: |

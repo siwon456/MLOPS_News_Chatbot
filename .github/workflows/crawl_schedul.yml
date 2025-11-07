@@ -26,7 +26,10 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
+        # 기존 라이브러리들
         pip install pandas beautifulsoup4 requests chromadb sentence-transformers langchain-community langchain tqdm
+        # 추가: langchain.text_splitter를 포함하는 패키지 설치
+        pip install langchain-text-splitters
 
     - name: Ensure data directory exists
       run: mkdir -p data

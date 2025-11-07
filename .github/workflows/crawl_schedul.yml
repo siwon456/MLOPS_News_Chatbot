@@ -26,38 +26,40 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        # 기존 라이브러리들
-        pip install pandas beautifulsoup4 requests chromadb sentence-transformers langchain-community langchain tqdm
-        # 추가: langchain.text_splitter 모듈을 위한 패키지 설치
-        pip install langchain-text-splitters
+        # pipeline.py 실행에 필요한 최소한의 라이브러리만 설치
+        # (ChromaDB 관련 라이브러리는 app.py에서 사용하므로 pipeline.py에는 필요 없습니다.)
+        pip install pandas beautifulsoup4 requests tqdm
+        # 추가: langchain.text_splitter 모듈을 위한 패키지 설치 (pipeline.py에 없어도 app.py가 사용)
+        # pipeline.py는 이제 ChromaDB를 생성하지 않지만, app.py에서 여전히 필요하므로 설치합니다.
+        # (아래 pipeline.py 코드에서 langchain 관련 임포트를 제거하는 것이 더 깔끔합니다.)
+        pip install chromadb sentence-transformers langchain-community langchain langchain-text-splitters
         # ChromaDB telemetry 오류를 방지하기 위해 cohere 제거 (만약 cohere가 설치되어 있다면)
         pip uninstall -y cohere || true
 
     - name: Ensure data directory exists
       run: mkdir -p data
 
-    - name: Run data pipeline
+    - name: Run data pipeline (CSV update only)
       run: python pipeline.py
       env:
         NAVER_CLIENT_ID: ${{ secrets.NAVER_CLIENT_ID }}
         NAVER_CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }}
 
-    - name: Commit and Push new data
+    - name: Commit and Push new CSV data
       run: |
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
         
         echo "--- DEBUG: Commit and Push Start ---"
         
-        # 모든 DB 폴더와 CSV 파일 추가
-        git add -f chroma_db_DB* || true 
-        git add data/*.csv || true # data/*.csv 추가 (pipeline.py가 생성할 수 있음)
+        # 'data/merged_all_news.csv' 파일만 추가
+        git add data/merged_all_news.csv || true
         
         if git diff-index --quiet HEAD; then
           echo "No changes detected. Skipping commit and push."
         else
           echo "Changes detected. Proceeding with commit and push."
-          git commit -m "Automated data update (Every 2 Hours, Individual DBs): $(date +'%Y-%m-%d %H:%M:%S')"
+          git commit -m "Automated CSV data update (Every 2 Hours)"
           git pull --rebase
           git push
           echo "--- DEBUG: Commit and Push End ---"

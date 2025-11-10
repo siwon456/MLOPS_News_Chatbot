@@ -4,12 +4,12 @@ import json
 import os
 import re
 import time
-# import shutil # 더 이상 ChromaDB 폴더를 다루지 않으므로 제거
+# import shutil # app.py가 DB를 생성하므로 여기서는 필요 없습니다.
 from typing import List, Dict, Any
-# import chromadb # 더 이상 ChromaDB를 다루지 않으므로 제거
-# from sentence_transformers import SentenceTransformer # 더 이상 임베딩하지 않으므로 제거
-# from langchain.text_splitter import RecursiveCharacterTextSplitter # 더 이상 텍스트 분할을 하지 않으므로 제거
-# from langchain.docstore.document import Document # 더 이상 Document 객체를 만들지 않으므로 제거
+# import chromadb # app.py가 DB를 생성하므로 여기서는 필요 없습니다.
+# from sentence_transformers import SentenceTransformer # app.py가 DB를 생성하므로 여기서는 필요 없습니다.
+# from langchain.text_splitter import RecursiveCharacterTextSplitter # app.py가 DB를 생성하므로 여기서는 필요 없습니다.
+# from langchain.docstore.document import Document # app.py가 DB를 생성하므로 여기서는 필요 없습니다.
 from tqdm import tqdm
 import requests
 from bs4 import BeautifulSoup
@@ -30,31 +30,39 @@ MAX_ARTICLES_PER_KEYWORD = 1000 # 각 키워드당 최대 크롤링할 기사 �
 
 def clean_text(text):
     """HTML 태그 및 특수문자 제거"""
+    if not text:
+        return ""
     cleaned_text = re.sub('<.*?>', '', text)
     cleaned_text = cleaned_text.replace('&quot;', "'")
     cleaned_text = cleaned_text.replace('<b>', '').replace('</b>', '')
     return cleaned_text
 
 def get_article_content(url):
-    """주어진 URL에서 뉴스 기사 본문 크롤링"""
+    """주어진 URL에서 뉴스 기사 본문 크롤링 (실패 시 빈 문자열 반환)"""
+    # 네이버 뉴스 링크가 아닌 경우, 파싱이 거의 항상 실패할 것입니다.
+    if "news.naver.com" not in url:
+        return ""
+        
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, headers=headers, timeout=5) # 타임아웃 5초
         
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
+            # 네이버 뉴스 본문 영역 ID
             article_content = soup.find('div', {'id': 'dic_area'})
             if article_content:
                 return article_content.get_text(strip=True)
             
+            # 다른 네이버 뉴스 본문 영역 ID (mnews 등)
             article_content_alt = soup.find('div', {'id': 'articleBodyContents'})
             if article_content_alt:
                 return article_content_alt.get_text(strip=True)
 
-            return ""
-        return ""
+            return "" # 파싱할 영역을 찾지 못함
+        return "" # HTTP 200이 아님
     except Exception as e:
-        print(f"경고: URL '{url}'에서 기사 내용 가져오기 실패: {e}")
+        # print(f"경고: URL '{url}'에서 기사 내용 가져오기 실패: {e}") # 로그가 너무 많아질 수 있으므로 주석 처리
         return ""
 
 def search_naver_news(keyword, start, display):
@@ -83,7 +91,10 @@ def search_naver_news(keyword, start, display):
         return None
 
 def get_all_news_for_keyword(keyword, max_articles):
-    """지정된 키워드로 뉴스 기사 크롤링 및 본문 추출"""
+    """
+    지정된 키워드로 뉴스 기사 크롤링.
+    본문 파싱(get_article_content)에 실패하면 요약글(description)을 content로 사용합니다.
+    """
     result_all = []
     start = 1
     display = 100
@@ -98,17 +109,29 @@ def get_all_news_for_keyword(keyword, max_articles):
                 if len(result_all) >= max_articles:
                     break
                 
-                if "news.naver.com" in item['link']:
-                    article_text = get_article_content(item['link'])
-                    if article_text:
-                        result_all.append({
-                            'title': clean_text(item['title']),
-                            'description': clean_text(item['description']),
-                            'content': article_text,
-                            'link': item['link'],
-                            'keyword_topic': keyword # 어떤 키워드에서 크롤링된 기사인지 기록
-                        })
-                    time.sleep(0.1)
+                # 1. 기사 본문 파싱 시도 (주로 news.naver.com 링크만 성공)
+                article_text = get_article_content(item['link'])
+                
+                # 2. (수정된 로직) 본문 파싱에 실패하면, 요약글을 content로 사용
+                if not article_text:
+                    content_to_use = clean_text(item.get('description', ''))
+                else:
+                    content_to_use = article_text # 파싱 성공 시 본문 사용
+
+                # 3. 요약글조차 없으면 수집하지 않음
+                if not content_to_use:
+                    continue
+
+                result_all.append({
+                    'title': clean_text(item.get('title', '')),
+                    'description': clean_text(item.get('description', '')),
+                    'content': content_to_use, # 본문 또는 요약글
+                    'link': item.get('link', ''),
+                    'keyword_topic': keyword
+                })
+                
+                # API 요청 간에 약간의 딜레이
+                time.sleep(0.05) 
             
             if len(result_json['items']) < display:
                 break

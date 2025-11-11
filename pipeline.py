@@ -35,13 +35,12 @@ def clean_text(text):
 
 def get_article_content(url):
     """주어진 URL에서 뉴스 기사 본문 크롤링 (실패 시 빈 문자열 반환)"""
-    # 네이버 뉴스 링크가 아닌 경우, 파싱이 거의 항상 실패할 것입니다.
     if "news.naver.com" not in url:
         return ""
         
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-        response = requests.get(url, headers=headers, timeout=5) # 타임아웃 5초
+        response = requests.get(url, headers=headers, timeout=5)
         
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
@@ -50,7 +49,7 @@ def get_article_content(url):
             if article_content:
                 return article_content.get_text(strip=True)
             
-            # 다른 네이버 뉴스 본문 영역 ID (mnews 등)
+            # 다른 네이버 뉴스 본문 영역 ID
             article_content_alt = soup.find('div', {'id': 'articleBodyContents'})
             if article_content_alt:
                 return article_content_alt.get_text(strip=True)
@@ -58,7 +57,6 @@ def get_article_content(url):
             return "" # 파싱할 영역을 찾지 못함
         return "" # HTTP 200이 아님
     except Exception as e:
-        # print(f"경고: URL '{url}'에서 기사 내용 가져오기 실패: {e}") # 로그가 너무 많아질 수 있으므로 주석 처리
         return ""
 
 def search_naver_news(keyword, start, display):
@@ -89,102 +87,132 @@ def search_naver_news(keyword, start, display):
 def get_all_news_for_keyword(keyword, max_articles):
     """
     지정된 키워드로 뉴스 기사 크롤링.
-    본문 파싱에 실패하면 요약글을 content로 사용하고, 날짜 정보도 포함합니다.
     """
     result_all = []
     start = 1
     display = 100
     
     print(f"\n--- 키워드 '{keyword}' 뉴스 크롤링 시작 (최대 {max_articles}개) ---")
-    while len(result_all) < max_articles and start <= 1000:
-        print(f"  페이지 {start // display + 1} ({start}번째부터) 크롤링 중...")
-        result_json = search_naver_news(keyword, start, display)
-        
-        if result_json and 'items' in result_json:
-            for item in result_json['items']:
-                if len(result_all) >= max_articles:
-                    break
-                
-                article_text = get_article_content(item['link'])
-                
-                if not article_text:
-                    content_to_use = clean_text(item.get('description', ''))
-                else:
-                    content_to_use = article_text
-
-                if not content_to_use:
-                    continue
-
-                # --- 날짜 정보 추가 시작 ---
-                pub_date = item.get('pubDate', '') # Naver API에서 pubDate를 가져옴
-                # pubDate 형식: 'Sat, 20 Jan 2024 10:00:00 +0900'
-                # 필요에 따라 원하는 형식으로 파싱하여 저장할 수 있습니다.
-                # 예: YYYY-MM-DD 형식으로 변환 (더 복잡한 날짜 파싱은 datetime 모듈 필요)
-                formatted_date = pub_date.split(' ', 4)[3] + ' ' + pub_date.split(' ', 4)[2] + ' ' + pub_date.split(' ', 4)[1] if pub_date else '날짜 없음'
-                try: # 'Fri, 26 Apr 2024 10:00:00 +0900' -> '2024-04-26'
-                    dt_object = datetime.strptime(pub_date, '%a, %d %b %Y %H:%M:%S %z')
-                    formatted_date = dt_object.strftime('%Y-%m-%d')
-                except ValueError:
-                    formatted_date = '날짜 없음'
-                # --- 날짜 정보 추가 끝 ---
-
-                result_all.append({
-                    'title': clean_text(item.get('title', '')),
-                    'description': clean_text(item.get('description', '')),
-                    'content': content_to_use,
-                    'link': item.get('link', ''),
-                    'keyword_topic': keyword,
-                    'date': formatted_date # 'date' 컬럼 추가
-                })
-                
-                time.sleep(0.05) 
+    
+    # tqdm을 사용하여 진행률 표시 (tqdm 라이브러리가 설치되어 있어야 함: pip install tqdm)
+    # Naver API는 최대 1000개(start=1000)까지만 조회가 가능합니다.
+    max_start = min(1001, max_articles + display)
+    
+    with tqdm(total=max_articles, desc=f' ➡️  {keyword}') as pbar:
+        while len(result_all) < max_articles and start <= 1000:
             
-            if len(result_json['items']) < display:
-                break
-            start += display
-        else:
-            break
+            result_json = search_naver_news(keyword, start, display)
+            
+            if result_json and 'items' in result_json:
+                items = result_json['items']
+                
+                for item in items:
+                    if len(result_all) >= max_articles:
+                        break
+                    
+                    article_text = get_article_content(item['link'])
+                    
+                    if not article_text:
+                        content_to_use = clean_text(item.get('description', ''))
+                    else:
+                        content_to_use = article_text
 
-    print(f"--- 키워드 '{keyword}'에 대해 총 {len(result_all)}개의 뉴스 기사 크롤링 완료 ---")
+                    if not content_to_use:
+                        continue
+
+                    # 날짜 정보 파싱
+                    pub_date = item.get('pubDate', '')
+                    try: 
+                        dt_object = datetime.strptime(pub_date, '%a, %d %b %Y %H:%M:%S %z')
+                        formatted_date = dt_object.strftime('%Y-%m-%d')
+                    except ValueError:
+                        formatted_date = '날짜 없음'
+
+                    result_all.append({
+                        'title': clean_text(item.get('title', '')),
+                        'description': clean_text(item.get('description', '')),
+                        'content': content_to_use,
+                        'link': item.get('link', ''), # 중복 제거를 위한 고유 키
+                        'keyword_topic': keyword,
+                        'date': formatted_date 
+                    })
+                    
+                    pbar.update(1) # 진행바 1 증가
+                    
+                    time.sleep(0.01) # Naver API 속도 제한을 위한 약간의 딜레이
+                
+                if len(items) < display:
+                    break # 마지막 페이지
+                start += display
+            else:
+                break # API 오류 또는 결과 없음
+
+    print(f"\n--- 키워드 '{keyword}'에 대해 총 {len(result_all)}개의 뉴스 기사 크롤링 완료 ---")
     return result_all
 
-# --- 메인 파이프라인 실행 로직 ---
+# --- 메인 파이프라인 실행 로직 (데이터 누적 및 중복 제거) ---
 if __name__ == "__main__":
     print("\n" + "="*50)
-    print("      통합 뉴스 데이터 파이프라인 시작 (CSV만 업데이트)")
+    print("      통합 뉴스 데이터 파이프라인 시작 (CSV 누적 업데이트)")
     print("="*50)
 
     if not NAVER_CLIENT_ID or not NAVER_CLIENT_SECRET:
         print("환경 변수 'NAVER_CLIENT_ID'와 'NAVER_CLIENT_SECRET'를 설정해야 합니다.")
-        print("GitHub Actions Secrets 또는 로컬 환경 변수에 추가해주세요.")
         sys.exit(1)
 
     all_crawled_dfs = []
     
     for keyword in KEYWORDS_TO_CRAWL:
+        # Naver API는 '최신순'이 아닌 '유사도순'으로 결과를 반환하므로,
+        # 매번 실행 시 중복을 제거하기 위해 최대 1000개를 조회하는 것이 합리적입니다.
         news_data = get_all_news_for_keyword(keyword, MAX_ARTICLES_PER_KEYWORD)
         
         if not news_data:
-            print(f"경고: 키워드 '{keyword}'에 대해 크롤링된 뉴스가 없습니다. 다음 키워드로 넘어갑니다.")
+            print(f"경고: 키워드 '{keyword}'에 대해 크롤링된 뉴스가 없습니다.")
             continue
             
         df_keyword = pd.DataFrame(news_data)
         all_crawled_dfs.append(df_keyword)
 
     if not all_crawled_dfs:
-        print("\n모든 키워드에 대해 크롤링된 뉴스가 없어 통합 CSV 파일을 생성할 수 없습니다.")
-        sys.exit(1)
+        print("\n모든 키워드에 대해 크롤링된 뉴스가 없어 파이프라인을 종료합니다.")
+        sys.exit(0)
 
-    # 모든 키워드의 데이터를 하나의 DataFrame으로 병합
-    merged_df = pd.concat(all_crawled_dfs, ignore_index=True)
-    print(f"\n모든 키워드로부터 총 {len(merged_df)}개의 뉴스 기사 병합 완료.")
-
-    # 병합된 데이터를 하나의 CSV 파일로 저장
+    # 1. 새로 수집된 데이터를 하나의 DataFrame으로 병합
+    new_df = pd.concat(all_crawled_dfs, ignore_index=True)
+    print(f"\n모든 키워드로부터 총 {len(new_df)}개의 뉴스 기사 수집 완료.")
+    
     output_merged_csv_path = 'data/merged_all_news.csv'
+    final_df = new_df # 최종본을 일단 new_df로 설정
+
+    # 2. 기존 데이터 로드 및 병합 (GitHub 크롤러와 동일한 로직)
+    if os.path.exists(output_merged_csv_path):
+        print(f"\n기존 데이터 파일 '{output_merged_csv_path}'을 로드합니다.")
+        try:
+            existing_df = pd.read_csv(output_merged_csv_path)
+            
+            # 기존 데이터와 새 데이터를 하나로 합칩니다.
+            combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+            
+            # 3. 중복 제거: 'link' (기사 URL)를 기준으로 최신 데이터(last)만 남깁니다.
+            initial_count = len(combined_df)
+            final_df = combined_df.drop_duplicates(subset=['link'], keep='last')
+            removed_count = initial_count - len(final_df)
+            
+            print(f"ℹ️ 중복된 뉴스 데이터 {removed_count}개를 제거했습니다.")
+
+        except pd.errors.EmptyDataError:
+            print("경고: 기존 파일이 비어 있어 새로운 데이터만 사용합니다.")
+        except Exception as e:
+            print(f"❌ 기존 파일 로드 중 오류 발생 ({e}). 새로운 데이터만 사용하여 저장합니다.")
+    else:
+        print("\n기존 데이터 파일이 없습니다. 새로운 데이터만 사용하여 저장합니다.")
+
+    # 4. 최종 데이터 저장
     os.makedirs(os.path.dirname(output_merged_csv_path), exist_ok=True)
-    merged_df.to_csv(output_merged_csv_path, index=False, encoding='utf-8-sig')
-    print(f"모든 키워드의 병합된 데이터가 '{output_merged_csv_path}'로 저장되었습니다.")
+    final_df.to_csv(output_merged_csv_path, index=False, encoding='utf-8-sig')
 
     print("\n" + "="*50)
-    print("      뉴스 데이터 파이프라인 완료 (CSV 업데이트만)")
+    print(f"✅ 최종 저장 완료: 총 {len(final_df)}개의 고유 뉴스 데이터")
+    print(f"파일 경로: '{output_merged_csv_path}'")
     print("="*50)

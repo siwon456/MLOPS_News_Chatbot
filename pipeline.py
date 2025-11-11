@@ -4,16 +4,12 @@ import json
 import os
 import re
 import time
-# import shutil # app.py가 DB를 생성하므로 여기서는 필요 없습니다.
 from typing import List, Dict, Any
-# import chromadb # app.py가 DB를 생성하므로 여기서는 필요 없습니다.
-# from sentence_transformers import SentenceTransformer # app.py가 DB를 생성하므로 여기서는 필요 없습니다.
-# from langchain.text_splitter import RecursiveCharacterTextSplitter # app.py가 DB를 생성하므로 여기서는 필요 없습니다.
-# from langchain.docstore.document import Document # app.py가 DB를 생성하므로 여기서는 필요 없습니다.
 from tqdm import tqdm
 import requests
 from bs4 import BeautifulSoup
 import sys
+from datetime import datetime
 
 # --- 1. 설정 (환경 변수 사용) ---
 NAVER_CLIENT_ID = os.environ.get("NAVER_CLIENT_ID")
@@ -93,7 +89,7 @@ def search_naver_news(keyword, start, display):
 def get_all_news_for_keyword(keyword, max_articles):
     """
     지정된 키워드로 뉴스 기사 크롤링.
-    본문 파싱(get_article_content)에 실패하면 요약글(description)을 content로 사용합니다.
+    본문 파싱에 실패하면 요약글을 content로 사용하고, 날짜 정보도 포함합니다.
     """
     result_all = []
     start = 1
@@ -109,28 +105,38 @@ def get_all_news_for_keyword(keyword, max_articles):
                 if len(result_all) >= max_articles:
                     break
                 
-                # 1. 기사 본문 파싱 시도 (주로 news.naver.com 링크만 성공)
                 article_text = get_article_content(item['link'])
                 
-                # 2. (수정된 로직) 본문 파싱에 실패하면, 요약글을 content로 사용
                 if not article_text:
                     content_to_use = clean_text(item.get('description', ''))
                 else:
-                    content_to_use = article_text # 파싱 성공 시 본문 사용
+                    content_to_use = article_text
 
-                # 3. 요약글조차 없으면 수집하지 않음
                 if not content_to_use:
                     continue
+
+                # --- 날짜 정보 추가 시작 ---
+                pub_date = item.get('pubDate', '') # Naver API에서 pubDate를 가져옴
+                # pubDate 형식: 'Sat, 20 Jan 2024 10:00:00 +0900'
+                # 필요에 따라 원하는 형식으로 파싱하여 저장할 수 있습니다.
+                # 예: YYYY-MM-DD 형식으로 변환 (더 복잡한 날짜 파싱은 datetime 모듈 필요)
+                formatted_date = pub_date.split(' ', 4)[3] + ' ' + pub_date.split(' ', 4)[2] + ' ' + pub_date.split(' ', 4)[1] if pub_date else '날짜 없음'
+                try: # 'Fri, 26 Apr 2024 10:00:00 +0900' -> '2024-04-26'
+                    dt_object = datetime.strptime(pub_date, '%a, %d %b %Y %H:%M:%S %z')
+                    formatted_date = dt_object.strftime('%Y-%m-%d')
+                except ValueError:
+                    formatted_date = '날짜 없음'
+                # --- 날짜 정보 추가 끝 ---
 
                 result_all.append({
                     'title': clean_text(item.get('title', '')),
                     'description': clean_text(item.get('description', '')),
-                    'content': content_to_use, # 본문 또는 요약글
+                    'content': content_to_use,
                     'link': item.get('link', ''),
-                    'keyword_topic': keyword
+                    'keyword_topic': keyword,
+                    'date': formatted_date # 'date' 컬럼 추가
                 })
                 
-                # API 요청 간에 약간의 딜레이
                 time.sleep(0.05) 
             
             if len(result_json['items']) < display:
@@ -141,7 +147,6 @@ def get_all_news_for_keyword(keyword, max_articles):
 
     print(f"--- 키워드 '{keyword}'에 대해 총 {len(result_all)}개의 뉴스 기사 크롤링 완료 ---")
     return result_all
-
 
 # --- 메인 파이프라인 실행 로직 ---
 if __name__ == "__main__":
